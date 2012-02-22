@@ -51,7 +51,6 @@ import os
 import sys
 import subprocess
 
-
 if os.environ.get('CFG_INVENIO_SRCDIR'):
     CFG_INVENIO_SRCDIR = os.environ.get('CFG_INVENIO_SRCDIR')
 else:
@@ -62,7 +61,6 @@ if os.environ.get('CFG_INVENIO_USER'):
     CFG_INVENIO_USER = os.environ.get('CFG_INVENIO_USER')
 else:
     CFG_INVENIO_USER = 'apache'
-
 
 if '--cds' in sys.argv:
     CFG_PREFIX = '/opt/cdsweb'
@@ -78,6 +76,17 @@ else:
     CFG_MSG_HEADING = 'logbook:'
     CFG_MSG_MACHINE = 'on the server'
 
+CFG_SPECIAL_COMMANDS = {
+                        'webhelp/search_examples.dat' : 'make reset-inspire-examples-searches',
+                        'feedboxes/' : 'make reset-inspire-portalbox-configuration',
+                        'bibformat/' : 'sudo -u %s %s/bin/webcoll -f' % (CFG_INVENIO_USER, CFG_PREFIX),
+                       }
+
+CFG_IGNORE_LOCATION_BASENAMES = [
+                                 'Makefile',
+                                 'search_examples.dat',
+                                 'portalbox'
+                                 ]
 
 def get_target_source_pathname(local_source_pathname):
     """
@@ -179,15 +188,15 @@ def get_commit_headline(commitid, repodir):
     return msg_headline.strip()
 
 
-def get_commit_files(commitid, repodir):
+def get_commit_files(commitid, repodir, filename_only=False):
     """
-    Return list of files modified in commit COMMITID which can be
-    either a SHA1 or range SHA1a..SHA1b.
+    Return list of files and their modified status in commit COMMITID
+    which can be either a SHA1 or range SHA1a..SHA1b.
     """
-    dfiles = {}
+    files = []
     os.chdir(repodir)
     process = subprocess.Popen(['git', 'show', '--pretty=format:',
-                                '--name-only', commitid],
+                                '--name-status', commitid],
                                stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
     out, err = process.communicate()
@@ -197,13 +206,15 @@ def get_commit_files(commitid, repodir):
         lines = out.split('\n') # pylint: disable=E1103
         for line in lines:
             if line:
-                dfiles[line] = 1
-    lfiles = dfiles.keys()
-    lfiles.sort()
+                # Splits into: status, filename
+                line_parts = line.split()
+                files.append(line_parts)
     if '--verbose' in sys.argv:
-        print lfiles
-    return lfiles
-
+        print files
+    if filename_only:
+        only_files = [f for s,f in files]
+        return only_files
+    return files
 
 def detect_commitid(cliargs):
     """
@@ -284,33 +295,16 @@ def detect_db_changes(commitid, repodir):
         print out
         print '#+END_EXAMPLE'
 
-
-def detect_file_installation_place(afile):
+def guess_installation_location(afile_basename, afile_extension):
     """
-    Detect where to install file AFILE depending on either file
-    existence in target directory tree, or via guesswork depending on
-    the file extension (Python files here, BTFs there, etc.)
-
-    If non-installable (e.g. Makefile), then return empty string.
-
-    If not known how to install it, then return
-    `/tmp/ERROR-UNKNOWN-DESTINATION-PLEASE-INSPECT-AND-ENRICH-RULES'.
+    Based on given basename and extension try to guess where it should be
+    located.
     """
-
-    afile_name, afile_extension = os.path.splitext(afile)
-    afile_basename = os.path.basename(afile)
-
-    # 1st: try to find the file pathname:
-    process = subprocess.Popen(['find', CFG_PREFIX, '-name', afile_basename],
-                               stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE)
-    out, err = process.communicate()
-    if out:
-        return out.strip() # pylint: disable=E1103
-
-    # 2nd: if not found, try to guess by extension:
-    if not afile_extension:
-        return '/tmp/ERROR-UNKNOWN-DESTINATION-PLEASE-INSPECT-AND-ENRICH-RULES'
+    invalid = [l for l in CFG_IGNORE_LOCATION_BASENAMES if l in afile_basename]
+    if invalid or afile_extension in ('.ac', '.am', '.m4', '.in', '.rpath'):
+        return '' # we ignore them
+    elif afile_basename.startswith('bfe_'):
+        return CFG_PREFIX + '/lib/python/invenio/bibformat_elements/'
     elif afile_extension in ('.py'):
         return CFG_PREFIX + '/lib/python/invenio/'
     elif afile_extension in ('.js'):
@@ -333,11 +327,52 @@ def detect_file_installation_place(afile):
         return CFG_PREFIX + '/var/www-wsgi/'
     elif afile_extension in ('.po'):
         return '' # cannot install PO files, need to create GMO ones
-    elif afile_extension in ('.ac', '.am', '.m4', '.in', '.rpath'):
-        return '' # ignore autotools files like Makefile.am and the like
     else:
         return '/tmp/ERROR-UNKNOWN-DESTINATION-PLEASE-INSPECT-AND-ENRICH-RULES'
 
+def detect_file_installation_place(afile, astatus):
+    """
+    Detect where to install file AFILE depending on modified status and
+    file existence in target directory tree, or via guesswork depending on
+    the file extension (Python files here, BTFs there, etc.)
+
+    If non-installable (e.g. Makefile), then return empty string.
+
+    If not known how to install it, then return
+    `/tmp/ERROR-UNKNOWN-DESTINATION-PLEASE-INSPECT-AND-ENRICH-RULES'.
+    """
+
+    afile_name, afile_extension = os.path.splitext(afile)
+    afile_basename = os.path.basename(afile)
+
+    # 1st: try to guess the location to limit search, return if empty
+    possible_location = guess_installation_location(afile_basename, afile_extension)
+    if possible_location == '':
+        return possible_location
+
+    # Is this a new file?
+    if astatus == 'A':
+        return possible_location
+
+    if 'ERROR-UNKNOWN-DESTINATION' not in possible_location:
+        # 2nd: try to find the file pathname:
+        process = subprocess.Popen(['find', possible_location, '-name', afile_basename],
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+        out, err = process.communicate()
+        if out:
+            return out.strip() # pylint: disable=E1103
+
+    print afile, afile_basename
+    # 3rd: try entire invenio installation tree
+    process = subprocess.Popen(['find', CFG_PREFIX, '-name', afile_basename],
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+    out, err = process.communicate()
+    if out:
+        return out.strip() # pylint: disable=E1103
+
+    return '/tmp/ERROR-UNKNOWN-DESTINATION-PLEASE-INSPECT-AND-ENRICH-RULES'
 
 def write_single_repo_deploy_recipe_header(commitid, repodir):
     """
@@ -392,7 +427,7 @@ sudo /etc/init.d/httpd graceful
 """ % {'repodir': get_target_source_pathname(repodir),
        'apache': CFG_INVENIO_USER,
        'subdir': os.path.dirname(os.path.commonprefix(get_commit_files(commitid,
-                 repodir))),
+                 repodir, filename_only=True))),
        'prefixdir': CFG_PREFIX}
 
 
@@ -401,10 +436,26 @@ def write_single_repo_deploy_recipe_body_via_filecopy(commitid, repodir):
     Write recipe body for deploying commitid from REPODIR via file copy.
     """
     l_file_targetdir = [] # list of tuples (afile, afile_target_dir) to install
-    for afile in get_commit_files(commitid, repodir):
-        afile_target_dir = detect_file_installation_place(afile)
+    l_file_newpath = [] # list of new files added
+    l_file_deletepath = [] # list of tuples (afile, afile_target_dir) to delete
+    l_file_special = []
+    for astatus, afile in get_commit_files(commitid, repodir):
+        # Check any special cases for this file
+        parts = [f for f, c in CFG_SPECIAL_COMMANDS.items() if f in afile]
+        if parts != []:
+            if parts[0] not in l_file_special:
+                l_file_special.append(parts[0])
+        # Check then for where it should be installed
+        afile_target_dir = detect_file_installation_place(afile, astatus)
         if afile_target_dir:
-            l_file_targetdir.append((afile, afile_target_dir))
+            if astatus == 'D':
+                l_file_deletepath.append((afile, afile_target_dir))
+            else:
+                l_file_targetdir.append((afile, afile_target_dir))
+            if astatus == 'A':
+                l_file_newpath.append(afile)
+
+    # We are now printing the recipe
     print """\
 #+BEGIN_SRC sh
 sudo -u %(apache)s /usr/bin/id
@@ -412,18 +463,33 @@ cd %(repodir)s
 git pull""" % {'repodir': get_target_source_pathname(repodir),
                'apache': CFG_INVENIO_USER,}
     for afile, afile_target_dir in l_file_targetdir:
-        print """\
-colordiff %(afile)s %(afile_target_dir)s""" % \
-        {'afile': afile, 'afile_target_dir': afile_target_dir}
+        if afile not in l_file_newpath:
+            print """colordiff %(afile)s %(afile_target_dir)s""" % \
+                {'afile': afile, 'afile_target_dir': afile_target_dir}
+
     for afile, afile_target_dir in l_file_targetdir:
+        print """sudo -u %(apache)s cp %(afile)s %(afile_target_dir)s""" % \
+            {'afile': afile, 'afile_target_dir': afile_target_dir,
+             'apache': CFG_INVENIO_USER}
+
+    for afile, afile_target_dir in l_file_targetdir:
+        if afile in l_file_newpath:
+            print """colordiff %(afile)s %(afile_target_dir)s%(afile_target_basename)s""" % \
+                {'afile': afile, \
+                 'afile_target_dir': afile_target_dir, \
+                 'afile_target_basename': os.path.basename(afile)}
+        else:
+            print """colordiff %(afile)s %(afile_target_dir)s""" % \
+                {'afile': afile, 'afile_target_dir': afile_target_dir}
+    for afile in l_file_special:
+        print CFG_SPECIAL_COMMANDS[afile]
+
+    for afile, afile_target_dir in l_file_deletepath:
         print """\
-sudo -u %(apache)s cp %(afile)s %(afile_target_dir)s""" % \
+sudo -u %(apache)s rm %(afile)s %(afile_target_dir)s""" % \
         {'afile': afile, 'afile_target_dir': afile_target_dir,
          'apache': CFG_INVENIO_USER}
-    for afile, afile_target_dir in l_file_targetdir:
-        print """\
-colordiff %(afile)s %(afile_target_dir)s""" % \
-        {'afile': afile, 'afile_target_dir': afile_target_dir}
+
     print """\
 sudo /etc/init.d/httpd graceful
 #+END_SRC
