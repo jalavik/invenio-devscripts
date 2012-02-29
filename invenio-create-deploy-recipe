@@ -460,8 +460,10 @@ def write_single_repo_deploy_recipe_body_via_filecopy(commitid, repodir):
 #+BEGIN_SRC sh
 sudo -u %(apache)s /usr/bin/id
 cd %(repodir)s
-git pull""" % {'repodir': get_target_source_pathname(repodir),
-               'apache': CFG_INVENIO_USER,}
+""" % {'repodir': get_target_source_pathname(repodir),
+       'apache': CFG_INVENIO_USER,}
+    if '--no-pull' not in sys.argv:
+        print "git pull"
     for afile, afile_target_dir in l_file_targetdir:
         if afile not in l_file_newpath:
             print """colordiff %(afile)s %(afile_target_dir)s""" % \
@@ -626,15 +628,20 @@ def main():
         commitid1, commitid2 = commitid.split(',', 1)
         commitid1 = normalise_commitid(commitid1, repodir1)
         commitid2 = normalise_commitid(commitid2, repodir2)
-        write_twin_repo_deploy_recipe_header(commitid1, repodir1,
-                                             commitid2, repodir2)
+        if '--no-log' not in sys.argv:
+            write_twin_repo_deploy_recipe_header(commitid1, repodir1,
+                                                 commitid2, repodir2)
         write_twin_repo_deploy_recipe_body(commitid1, repodir1,
                                            commitid2, repodir2)
     else:
         # deploying from single repository:
-        repodir = get_toplevel_dir(os.getcwd())
+        if '--use-source' in sys.argv:
+            repodir = CFG_INVENIO_SRCDIR
+        else:
+            repodir = get_toplevel_dir(os.getcwd())
         commitid1 = normalise_commitid(commitid, repodir)
-        write_single_repo_deploy_recipe_header(commitid1, repodir)
+        if '--no-log' not in sys.argv:
+            write_single_repo_deploy_recipe_header(commitid1, repodir)
         write_single_repo_deploy_recipe_body(commitid, repodir)
     return
 
