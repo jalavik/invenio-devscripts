@@ -70,7 +70,7 @@ elif '--inspire' in sys.argv:
     CFG_PREFIX = '/opt/cds-invenio'
     CFG_MSG_HEADING = 'INSPIRE logbook:'
     CFG_MSG_MACHINE = 'on DEV (PCUDSSW1508), TEST (PCUDSSW1505)' + \
-                      ' and PROD (PCUDSSW150[6-7],PCUDSSX1506)'
+                      ' and PROD (PCUDSSW150[4,6-7],PCUDSSX1506)'
 else:
     CFG_PREFIX = '/opt/invenio'
     CFG_MSG_HEADING = 'logbook:'
@@ -80,12 +80,14 @@ CFG_SPECIAL_COMMANDS = {
                         'webhelp/search_examples.dat' : 'make reset-inspire-examples-searches',
                         'feedboxes/' : 'make reset-inspire-portalbox-configuration',
                         'bibformat/' : 'sudo -u %s %s/bin/webcoll -f' % (CFG_INVENIO_USER, CFG_PREFIX),
+                        'invenio.conf' : 'sudo -u %s %s/bin/inveniocfg --update-all' % (CFG_INVENIO_USER, CFG_PREFIX),
                        }
 
 CFG_IGNORE_LOCATION_BASENAMES = [
                                  'Makefile',
                                  'search_examples.dat',
-                                 'portalbox'
+                                 'portalbox',
+                                 '.gitignore'
                                  ]
 
 def get_target_source_pathname(local_source_pathname):
@@ -193,7 +195,7 @@ def get_commit_files(commitid, repodir, filename_only=False):
     Return list of files and their modified status in commit COMMITID
     which can be either a SHA1 or range SHA1a..SHA1b.
     """
-    files = []
+    files = {}
     os.chdir(repodir)
     process = subprocess.Popen(['git', 'show', '--pretty=format:',
                                 '--name-status', commitid],
@@ -208,13 +210,14 @@ def get_commit_files(commitid, repodir, filename_only=False):
             if line:
                 # Splits into: status, filename
                 line_parts = line.split()
-                files.append(line_parts)
+                files[line_parts[1]] = line_parts[0]
     if '--verbose' in sys.argv:
         print files
     if filename_only:
-        only_files = [f for s,f in files]
+        only_files = files.keys()
+        only_files.sort()
         return only_files
-    return files
+    return [(status, name) for name, status in files.items()]
 
 def detect_commitid(cliargs):
     """
@@ -295,16 +298,26 @@ def detect_db_changes(commitid, repodir):
         print out
         print '#+END_EXAMPLE'
 
-def guess_installation_location(afile_basename, afile_extension):
+def guess_installation_location(afile, afile_extension):
     """
     Based on given basename and extension try to guess where it should be
     located.
     """
+    afile_basename = os.path.basename(afile)
+    module_name = os.path.basename(os.path.dirname(os.path.dirname(afile)))
     invalid = [l for l in CFG_IGNORE_LOCATION_BASENAMES if l in afile_basename]
     if invalid or afile_extension in ('.ac', '.am', '.m4', '.in', '.rpath'):
         return '' # we ignore them
+    elif '/etc/' in afile and afile_extension in ('.cfg') and module_name:
+        return CFG_PREFIX + '/etc/' + module_name + '/'
+    elif module_name == 'bibedit' and afile_basename.startswith('record_'):
+        return CFG_PREFIX + '/etc/bibedit/record_templates/'
+    elif module_name == 'bibedit' and afile_basename.startswith('field_'):
+        return CFG_PREFIX + '/etc/bibedit/field_templates/'
     elif afile_basename.startswith('bfe_'):
         return CFG_PREFIX + '/lib/python/invenio/bibformat_elements/'
+    elif afile_extension in ('.py') and afile_basename.startswith('bst_'):
+        return CFG_PREFIX + '/lib/python/invenio/bibsched_tasklets/'
     elif afile_extension in ('.py'):
         return CFG_PREFIX + '/lib/python/invenio/'
     elif afile_extension in ('.js'):
@@ -315,7 +328,7 @@ def guess_installation_location(afile_basename, afile_extension):
         return CFG_PREFIX + '/etc/bibformat/format_templates/'
     elif afile_extension in ('.bfo'):
         return CFG_PREFIX + '/etc/bibformat/output_formats/'
-    elif afile_extension in ('.conf'):
+    elif afile_extension in ('.conf', '.xsl'):
         return CFG_PREFIX + '/etc/'
     elif afile_extension in ('.webdoc'):
         return CFG_PREFIX + '/lib/webdoc/invenio/'
@@ -346,12 +359,8 @@ def detect_file_installation_place(afile, astatus):
     afile_basename = os.path.basename(afile)
 
     # 1st: try to guess the location to limit search, return if empty
-    possible_location = guess_installation_location(afile_basename, afile_extension)
+    possible_location = guess_installation_location(afile, afile_extension)
     if possible_location == '':
-        return possible_location
-
-    # Is this a new file?
-    if astatus == 'A':
         return possible_location
 
     if 'ERROR-UNKNOWN-DESTINATION' not in possible_location:
@@ -363,8 +372,11 @@ def detect_file_installation_place(afile, astatus):
         if out:
             return out.strip() # pylint: disable=E1103
 
-    print afile, afile_basename
-    # 3rd: try entire invenio installation tree
+    # Is this a new file? (We do the above find just in case it is has been installed before)
+    if astatus == 'A':
+        return possible_location
+
+    # 3rd: try entire invenio installation tree (slow)
     process = subprocess.Popen(['find', CFG_PREFIX, '-name', afile_basename],
                                stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
@@ -459,8 +471,7 @@ def write_single_repo_deploy_recipe_body_via_filecopy(commitid, repodir):
     print """\
 #+BEGIN_SRC sh
 sudo -u %(apache)s /usr/bin/id
-cd %(repodir)s
-""" % {'repodir': get_target_source_pathname(repodir),
+cd %(repodir)s""" % {'repodir': get_target_source_pathname(repodir),
        'apache': CFG_INVENIO_USER,}
     if '--no-pull' not in sys.argv:
         print "git pull"
@@ -474,15 +485,6 @@ cd %(repodir)s
             {'afile': afile, 'afile_target_dir': afile_target_dir,
              'apache': CFG_INVENIO_USER}
 
-    for afile, afile_target_dir in l_file_targetdir:
-        if afile in l_file_newpath:
-            print """colordiff %(afile)s %(afile_target_dir)s%(afile_target_basename)s""" % \
-                {'afile': afile, \
-                 'afile_target_dir': afile_target_dir, \
-                 'afile_target_basename': os.path.basename(afile)}
-        else:
-            print """colordiff %(afile)s %(afile_target_dir)s""" % \
-                {'afile': afile, 'afile_target_dir': afile_target_dir}
     for afile in l_file_special:
         print CFG_SPECIAL_COMMANDS[afile]
 
