@@ -115,7 +115,7 @@ redhat6_install_packages () {
     for reqfile in requirements.txt requirements-extras.txt \
         requirements-flask.txt requirements-flask-ext.txt; do
         if [ -e $reqfile ]; then
-            sudo pip install -r $reqfile
+            sudo pip install -qr $reqfile
         fi
     done
     cd $olddir
@@ -123,7 +123,7 @@ redhat6_install_packages () {
 
 debian_install_packages () {
     # install system packages
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -qqy \
         git python-dev apache2-mpm-worker \
         mysql-server mysql-client gnuplot poppler-utils \
         clisp gettext libapache2-mod-wsgi unzip \
@@ -135,14 +135,14 @@ debian_install_packages () {
     # restart Redis explicitly; useful for Travis-CI VMs
     sudo /usr/sbin/service redis-server restart
     # installing libhdf5-dev is OS version dependent:
-    if sudo apt-get install -y -s libhdf5-dev; then
-        sudo apt-get install -y libhdf5-dev
+    if sudo apt-get install -qqy -s libhdf5-dev; then
+        sudo apt-get install -qqy libhdf5-dev
     else
-        sudo apt-get install -y libhdf5-serial-dev
+        sudo apt-get install -qqy libhdf5-serial-dev
     fi
     # install distribute and pip
     sudo apt-get remove -y python-setuptools python-pip
-    sudo apt-get install -y curl
+    sudo apt-get -qq install -y curl
     curl http://python-distribute.org/distribute_setup.py | sudo python
     sudo easy_install pip==1.3.1
     # install Python dependencies via pip
@@ -151,7 +151,7 @@ debian_install_packages () {
     for reqfile in requirements.txt requirements-extras.txt \
         requirements-flask.txt requirements-flask-ext.txt; do
         if [ -e $reqfile ]; then
-            sudo pip install -r $reqfile
+            sudo pip install -qr $reqfile
         fi
     done
     cd $olddir
@@ -171,7 +171,7 @@ freebsd_install_packages () {
     for reqfile in requirements.txt requirements-extras.txt \
         requirements-flask.txt requirements-flask-ext.txt; do
         if [ -e $reqfile ]; then
-            sudo pip install -r $reqfile
+            sudo pip install -qr $reqfile
         fi
     done
     cd $olddir
@@ -223,7 +223,7 @@ redhat_configure_apache () {
 }
 
 debian_configure_apache () {
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ssl-cert
+    sudo DEBIAN_FRONTEND=noninteractive apt-get -qq install -y ssl-cert
     sudo mkdir -p /etc/apache2/ssl
     if [ ! -e /etc/apache2/ssl/apache.pem ]; then
         sudo DEBIAN_FRONTEND=noninteractive /usr/sbin/make-ssl-cert \
